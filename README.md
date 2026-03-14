@@ -1,4 +1,4 @@
-# SQL Server Execution Plans — Deep Dive
+# SQL Server Execution Plans - architecture
 
 > **Architecture Master Plan · Week C1300S1**  
 > From SQL Server DBA to Data Architect | STN Government System Case Study
