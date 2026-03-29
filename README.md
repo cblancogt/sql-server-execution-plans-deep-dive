@@ -1,5 +1,4 @@
 # SQL Server Execution Plans - architecture
-
 > **Architecture Master Plan · Week C1300S1**  
 > From SQL Server DBA to Data Architect | STN Government System Case Study
 
@@ -31,7 +30,10 @@ Without a structured methodology to read and act on execution plans, these probl
 | Script | Topic |
 |--------|-------|
 | `01_stn_setup.sql` | Lab setup: 200K contributors, 1.5M declarations, 1.2M payments |
-| `02_scan_seek_lookup.sql` | Table Scan, Index Seek, Covered Index progression |
+| `02_scan_seek_lookup.sql` | Table Scan, Index Seek, Covered Index, Join Operators |
+| `03_estimated_vs_actual.sql` | Stale statistics, cardinality estimation failures, statistics health |
+| `04_cost_parallelism.sql` | Cost threshold for parallelism, MAXDOP, serial vs parallel plans |
+| `05_statistics_io_time.sql` | Implicit conversions, Sort spills, IO interpretation |
 
 ---
 
@@ -43,47 +45,63 @@ Index Seek           : Cheapest. 1-3 logical reads for any selectivity.
 Index Scan           : Reads the entire index. Acceptable if index is narrow.
 Table/Clustered Scan : Reads every data page. Avoid for selective filters.
 Key Lookup           : 1 random I/O per row. Deadly at scale. Eliminate with INCLUDE.
+RID Lookup           : Same as Key Lookup on heap tables — no clustered index.
 Hash Match           : Memory-intensive. Watch for tempdb spills.
+Merge Join           : Efficient when both sources arrive ordered by join key.
+Nested Loops         : Optimal when one table is small with an index on the inner.
+Adaptive Join        : SQL Server 2019+ decides join strategy at runtime.
 Sort                 : Materializes all rows before returning first. Blocks streaming.
-Spool                : Optimizer saved an intermediate result. Often a design signal.
 ```
 
-### Operators That Killed STN's Monday Report
+### Validated Results — STN Lab
 
-The original reporting query used **4 correlated subqueries**, each executing once per active contributor (~160,000 active records):
+**Scan vs Seek vs Covered Index (dbo.Contribuyente, 200K rows):**
 ```
-Execution model (original):
-  For each of 160,000 contributors:
-    Table Scan on Declaracion (1.5M rows) x 2
-    Table Scan on Pago (1.2M rows) x 1
-    Table Scan on AuditoriaFiscal (50K rows) x 1
+Table Scan (no index)    : 1,302 logical reads  77ms
+Index Seek + Key Lookup  :     6 logical reads  38ms
+Covered Index Seek       :     3 logical reads   1ms
 
-Total logical reads: ~1.2 billion pages
-Execution time: 12-18 minutes
+Improvement: 434x fewer logical reads
 ```
 
-After rewrite + targeted indexes:
+**MAXDOP 1 vs MAXDOP 0 (warm cache):**
 ```
-Execution model (optimized):
-  1x aggregation pass on Declaracion (filtered index, 150K rows)
-  1x aggregation pass on Pago (covered index)
-  1x aggregation pass on AuditoriaFiscal (filtered index, 8K rows)
-  Hash Join on aggregated results
+MAXDOP 1 (serial)    : CPU 16ms  Elapsed 15ms
+MAXDOP 0 (parallel)  : CPU 16ms  Elapsed 35ms
 
-Total logical reads: ~45,000 pages
-Execution time: 4-8 seconds
-Improvement: ~27,000x reduction in I/O
+Serial was faster — parallelism coordination overhead exceeded the benefit.
+```
+
+**Sort Spill — ORDER BY on 1,275,000 rows:**
+```
+Spill Level    : 8 (severe)
+Pages to TempDB: 8,781
+Memory granted : 53,504KB
+Memory used    : 53,632KB (exceeded grant by 128KB)
+```
+
+**Statistics — UPDATE STATISTICS impact:**
+```
+Cardinality error before : 237%
+Cardinality error after  : 227%
+Elapsed time before      : 93ms
+Elapsed time after       : 40ms
+Table Scan persisted — statistics improve estimates, not missing indexes.
 ```
 
 ---
 
 ## How to Use This Repository
 ```bash
-# 1. Create the lab database
-sqlcmd -S your-server -E -i scripts/01_stn_setup.sql
-
-# 2. Run each script in order with Actual Execution Plan enabled (Ctrl+M in SSMS)
+# 1. Adjust the file path in 01_stn_setup.sql to match the local SQL Server data directory
+# 2. Execute 01_stn_setup.sql to create the lab database
+# 3. Run each script in order with Actual Execution Plan enabled (Ctrl+M in SSMS)
 ```
+
+**Requirements:**
+- SQL Server 2022
+- SSMS 19+ with Sentry Plan for plan visualization
+- ~2GB disk space for the lab database
 
 ---
 
